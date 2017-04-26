@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 import logging
+import base64
 from functools import partial
-from six.moves.urllib.parse import urlsplit
+from six.moves.urllib.request import getproxies, proxy_bypass
+from six.moves.urllib.parse import unquote, urlsplit, urlunparse
+try:
+    from urllib2 import _parse_proxy
+except ImportError:
+    from urllib.request import _parse_proxy
 
 from scrapy.exceptions import CloseSpider, NotConfigured
 from scrapy import signals
 from scrapy.utils.misc import load_object
+from scrapy.utils.python import to_bytes
 from scrapy.utils.url import add_http_if_no_scheme
 from twisted.internet import task
 
@@ -60,7 +67,7 @@ class RotatingProxyMiddleware(object):
       Default is 300 (i.e. 5 min).
     """
     def __init__(self, proxy_list, logstats_interval, stop_if_no_proxies,
-                 max_proxies_to_try, backoff_base):
+                 max_proxies_to_try, backoff_base, auth_encoding='latin-1'):
 
         backoff = partial(exp_backoff_full_jitter, base=backoff_base)
         self.proxies = Proxies(self.cleanup_proxy_list(proxy_list),
@@ -69,6 +76,7 @@ class RotatingProxyMiddleware(object):
         self.reanimate_interval = 5
         self.stop_if_no_proxies = stop_if_no_proxies
         self.max_proxies_to_try = max_proxies_to_try
+        self.auth_encoding = auth_encoding
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -107,6 +115,23 @@ class RotatingProxyMiddleware(object):
         if self.reanimate_task.running:
             self.reanimate_task.stop()
 
+    def _basic_auth_header(self, username, password):
+        user_pass = to_bytes(
+            '%s:%s' % (unquote(username), unquote(password)),
+            encoding=self.auth_encoding)
+        return base64.b64encode(user_pass).strip()
+
+    def _get_proxy(self, url, orig_type):
+        proxy_type, user, password, hostport = _parse_proxy(url)
+        proxy_url = urlunparse((proxy_type or orig_type, hostport, '', '', '', ''))
+
+        if user:
+            creds = self._basic_auth_header(user, password)
+        else:
+            creds = None
+
+        return creds, proxy_url
+
     def process_request(self, request, spider):
         if 'proxy' in request.meta and not request.meta.get('_rotating_proxy'):
             return
@@ -123,7 +148,10 @@ class RotatingProxyMiddleware(object):
                     logger.error("No proxies available even after a reset.")
                     raise CloseSpider("no_proxies_after_reset")
 
-        request.meta['proxy'] = proxy
+        creds, proxy_url = self._get_proxy(proxy, '')
+        request.meta['proxy'] = proxy_url
+        if creds and not request.headers.get('Proxy-Authorization'):
+            request.headers['Proxy-Authorization'] = b'Basic ' + creds
         request.meta['download_slot'] = self.get_proxy_slot(proxy)
         request.meta['_rotating_proxy'] = True
 
