@@ -152,7 +152,8 @@ class RotatingProxyMiddleware(object):
         request.meta['proxy'] = proxy_url
         if creds and not request.headers.get('Proxy-Authorization'):
             request.headers['Proxy-Authorization'] = b'Basic ' + creds
-        request.meta['download_slot'] = self.get_proxy_slot(proxy)
+#       use default rules for auto throttle
+#         request.meta['download_slot'] = self.get_proxy_slot(proxy)
         request.meta['_rotating_proxy'] = True
 
     def get_proxy_slot(self, proxy):
